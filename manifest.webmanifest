@@ -1,0 +1,19 @@
+{
+  "name": "Osafi Steel Frames",
+  "short_name": "Osafi Steel",
+  "description": "Workshop management system for Osafi Steel Frames.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f5f2e9",
+  "theme_color": "#174b35",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "./osafi-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
