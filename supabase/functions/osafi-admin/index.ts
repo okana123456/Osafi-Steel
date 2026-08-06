@@ -81,7 +81,7 @@ Deno.serve(async (req) => {
 
       const { error: profileError } = await admin
         .from("users")
-        .insert({ id: userId, business_id: business.id, full_name: full_name.trim(), role: "ops_manager" });
+        .insert({ id: userId, business_id: business.id, full_name: full_name.trim(), email: email.trim(), role: "ops_manager" });
       if (profileError) {
         await admin.from("businesses").delete().eq("id", business.id);
         await admin.auth.admin.deleteUser(userId);
@@ -105,10 +105,11 @@ Deno.serve(async (req) => {
         return reply({ error: "Only an Ops Manager can invite team members" }, 403);
       }
 
-      const { email, full_name, redirect_to } = body;
+      const { email, full_name, phone, role, redirect_to } = body;
       if (![email, full_name].every((x) => typeof x === "string" && x.trim())) {
         return reply({ error: "Name and email are required" }, 400);
       }
+      const nextRole = "technician";
 
       const options: { data: Record<string, string>; redirectTo?: string } = {
         data: { full_name: full_name.trim() },
@@ -125,7 +126,9 @@ Deno.serve(async (req) => {
         id: invited.user.id,
         business_id: caller.business_id,
         full_name: full_name.trim(),
-        role: "technician",
+        email: email.trim(),
+        phone: typeof phone === "string" && phone.trim() ? phone.trim() : null,
+        role: nextRole,
       });
       if (profileError) {
         await admin.auth.admin.deleteUser(invited.user.id);
