@@ -180,6 +180,64 @@ Deno.serve(async (req) => {
       return reply({ ok: true });
     }
 
+    if (body.action === "update_team_member") {
+      const token = (req.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
+      const { data: callerData, error: callerError } = await admin.auth.getUser(token);
+      if (callerError || !callerData.user) return reply({ error: "Sign in required" }, 401);
+
+      const { data: caller } = await admin
+        .from("users")
+        .select("business_id,role")
+        .eq("id", callerData.user.id)
+        .single();
+      if (!caller || caller.role !== "ops_manager") {
+        return reply({ error: "Only an Ops Manager can edit team members" }, 403);
+      }
+
+      const userId = typeof body.user_id === "string" ? body.user_id : "";
+      const fullName = typeof body.full_name === "string" ? body.full_name.trim() : "";
+      const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+      const phone = typeof body.phone === "string" && body.phone.trim() ? body.phone.trim() : null;
+      if (!userId || !fullName || !email) {
+        return reply({ error: "Team member, name and email are required" }, 400);
+      }
+
+      const { data: member, error: memberError } = await admin
+        .from("users")
+        .select("id,business_id,role,full_name,email,phone")
+        .eq("id", userId)
+        .single();
+      if (memberError || !member) return reply({ error: "Team member was not found" }, 404);
+      if (member.business_id !== caller.business_id) {
+        return reply({ error: "Team member is not in your business" }, 403);
+      }
+      if (member.role === "ops_manager" && userId !== callerData.user.id) {
+        return reply({ error: "You cannot edit another manager account" }, 403);
+      }
+
+      const { error: authUpdateError } = await admin.auth.admin.updateUserById(userId, {
+        email,
+        email_confirm: true,
+        user_metadata: { full_name: fullName },
+      });
+      if (authUpdateError) return reply({ error: authUpdateError.message }, 400);
+
+      const { error: profileError } = await admin
+        .from("users")
+        .update({ full_name: fullName, email, phone })
+        .eq("id", userId);
+      if (profileError) {
+        await admin.auth.admin.updateUserById(userId, {
+          email: member.email || undefined,
+          email_confirm: true,
+          user_metadata: { full_name: member.full_name },
+        });
+        return reply({ error: profileError.message }, 400);
+      }
+
+      return reply({ ok: true });
+    }
+
     return reply({ error: "Unknown action" }, 400);
   } catch (error) {
     return reply({ error: error instanceof Error ? error.message : "Unexpected error" }, 500);
