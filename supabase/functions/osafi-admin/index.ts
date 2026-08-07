@@ -138,6 +138,48 @@ Deno.serve(async (req) => {
       return reply({ ok: true, user_id: invited.user.id });
     }
 
+    if (body.action === "remove_team_member") {
+      const token = (req.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
+      const { data: callerData, error: callerError } = await admin.auth.getUser(token);
+      if (callerError || !callerData.user) return reply({ error: "Sign in required" }, 401);
+
+      const { data: caller } = await admin
+        .from("users")
+        .select("business_id,role")
+        .eq("id", callerData.user.id)
+        .single();
+      if (!caller || caller.role !== "ops_manager") {
+        return reply({ error: "Only an Ops Manager can delete team members" }, 403);
+      }
+
+      const userId = typeof body.user_id === "string" ? body.user_id : "";
+      if (!userId) return reply({ error: "Team member id is required" }, 400);
+      if (userId === callerData.user.id) return reply({ error: "You cannot delete your own manager account" }, 400);
+
+      const { data: member, error: memberError } = await admin
+        .from("users")
+        .select("id,business_id,role,full_name")
+        .eq("id", userId)
+        .single();
+      if (memberError || !member) return reply({ error: "Team member was not found" }, 404);
+      if (member.business_id !== caller.business_id) return reply({ error: "Team member is not in your business" }, 403);
+      if (member.role === "ops_manager") return reply({ error: "Manager accounts cannot be deleted from Team" }, 403);
+
+      const { error: unassignError } = await admin
+        .from("jobs")
+        .update({ technician_id: null })
+        .eq("technician_id", userId);
+      if (unassignError) return reply({ error: unassignError.message }, 400);
+
+      const { error: profileError } = await admin.from("users").delete().eq("id", userId);
+      if (profileError) return reply({ error: profileError.message }, 400);
+
+      const { error: deleteAuthError } = await admin.auth.admin.deleteUser(userId);
+      if (deleteAuthError) return reply({ error: deleteAuthError.message }, 400);
+
+      return reply({ ok: true });
+    }
+
     return reply({ error: "Unknown action" }, 400);
   } catch (error) {
     return reply({ error: error instanceof Error ? error.message : "Unexpected error" }, 500);
