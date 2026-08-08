@@ -109,7 +109,8 @@ Deno.serve(async (req) => {
       if (![email, full_name].every((x) => typeof x === "string" && x.trim())) {
         return reply({ error: "Name and email are required" }, 400);
       }
-      const nextRole = "technician";
+      const allowedRoles = ["technician", "operations_manager", "store_manager", "accountant"];
+      const nextRole = typeof role === "string" && allowedRoles.includes(role) ? role : "technician";
 
       const options: { data: Record<string, string>; redirectTo?: string } = {
         data: { full_name: full_name.trim() },
@@ -198,6 +199,8 @@ Deno.serve(async (req) => {
       const fullName = typeof body.full_name === "string" ? body.full_name.trim() : "";
       const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
       const phone = typeof body.phone === "string" && body.phone.trim() ? body.phone.trim() : null;
+      const requestedRole = typeof body.role === "string" ? body.role : "technician";
+      const allowedRoles = ["technician", "operations_manager", "store_manager", "accountant"];
       if (!userId || !fullName || !email) {
         return reply({ error: "Team member, name and email are required" }, 400);
       }
@@ -214,6 +217,17 @@ Deno.serve(async (req) => {
       if (member.role === "ops_manager" && userId !== callerData.user.id) {
         return reply({ error: "You cannot edit another manager account" }, 403);
       }
+      const nextRole = member.role === "ops_manager"
+        ? "ops_manager"
+        : (allowedRoles.includes(requestedRole) ? requestedRole : member.role);
+
+      if (member.role === "technician" && nextRole !== "technician") {
+        const { error: unassignError } = await admin
+          .from("jobs")
+          .update({ technician_id: null })
+          .eq("technician_id", userId);
+        if (unassignError) return reply({ error: unassignError.message }, 400);
+      }
 
       const { error: authUpdateError } = await admin.auth.admin.updateUserById(userId, {
         email,
@@ -224,7 +238,7 @@ Deno.serve(async (req) => {
 
       const { error: profileError } = await admin
         .from("users")
-        .update({ full_name: fullName, email, phone })
+        .update({ full_name: fullName, email, phone, role: nextRole })
         .eq("id", userId);
       if (profileError) {
         await admin.auth.admin.updateUserById(userId, {
