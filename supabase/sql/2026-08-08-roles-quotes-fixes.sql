@@ -168,7 +168,7 @@ begin
   if v_req.status<>'pending' then raise exception 'This request is not pending'; end if;
   v_next:=case v_req.stage when 'cutting' then 'welding' when 'welding' then 'finishing'
     when 'finishing' then 'qc' when 'qc' then 'done' else 'done' end;
-  insert into public.stage_checklists(job_id,user_id,stage,answers,result,notes)
+  insert into public.stage_checklists(job_id,technician_id,stage,checklist_answers,result,notes)
   values(v_req.job_id,v_req.requested_by,v_req.stage,v_req.answers,'pass',v_req.notes);
   update public.job_stage_approval_requests set status='approved',reviewed_by=auth.uid(),reviewed_at=now()
   where id=p_checklist_id;
@@ -213,6 +213,16 @@ create policy accountant_purchase_orders_read on public.purchase_orders for sele
 using (business_id = public.osafi_my_business() and public.osafi_has_role('ops_manager','accountant'));
 
 -- Accounting department access.
+drop policy if exists customers_management_access on public.customers;
+create policy customers_management_access on public.customers for all
+using (
+  customers.business_id = public.osafi_my_business()
+  and public.osafi_has_role('ops_manager','operations_manager')
+)
+with check (
+  customers.business_id = public.osafi_my_business()
+  and public.osafi_has_role('ops_manager','operations_manager')
+);
 drop policy if exists accounting_manager_access on public.accounting_entries;
 create policy accounting_manager_access on public.accounting_entries for all
 using (business_id = public.osafi_my_business() and public.osafi_has_role('ops_manager','accountant'))
@@ -225,8 +235,38 @@ create policy accountant_customers_read on public.customers for select
 using (business_id = public.osafi_my_business() and public.osafi_has_role('ops_manager','accountant'));
 drop policy if exists accountant_invoices_access on public.invoices;
 create policy accountant_invoices_access on public.invoices for all
-using (exists(select 1 from public.jobs j where j.id=job_id and j.business_id=public.osafi_my_business() and public.osafi_has_role('ops_manager','accountant')))
-with check (exists(select 1 from public.jobs j where j.id=job_id and j.business_id=public.osafi_my_business() and public.osafi_has_role('ops_manager','accountant')));
+using (exists(select 1 from public.jobs j where j.id=invoices.job_id and j.business_id=public.osafi_my_business() and public.osafi_has_role('ops_manager','accountant')))
+with check (exists(select 1 from public.jobs j where j.id=invoices.job_id and j.business_id=public.osafi_my_business() and public.osafi_has_role('ops_manager','accountant')));
+
+create or replace function public.set_invoice_paid_status(p_invoice_id uuid, p_paid boolean)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_user public.users%rowtype;
+  v_invoice public.invoices%rowtype;
+  v_business_id uuid;
+begin
+  select * into v_user from public.users where id = auth.uid();
+  if v_user.id is null or v_user.role::text not in ('ops_manager','accountant') then
+    raise exception 'Only the Administrator or Accountant can update invoice payments';
+  end if;
+  select * into v_invoice from public.invoices where id = p_invoice_id;
+  if v_invoice.id is not null then
+    select business_id into v_business_id from public.jobs where id = v_invoice.job_id;
+  end if;
+  if v_invoice.id is null or v_business_id is null or v_business_id <> v_user.business_id then
+    raise exception 'Invoice not found for this business';
+  end if;
+  if coalesce(p_paid,false) then
+    update public.invoices set status = 'paid' where id = p_invoice_id;
+  else
+    update public.invoices set status = 'unpaid' where id = p_invoice_id;
+  end if;
+end;
+$$;
 
 -- Fraud-prevention checks: existing incomplete suppliers remain readable, but
 -- every new or edited supplier must have all identity/contact fields completed.
@@ -369,11 +409,11 @@ begin
   if v_req.status <> 'pending' then raise exception 'This NCR request is not pending'; end if;
   insert into public.ncrs(
     business_id, job_id, category, stage_failed_at, root_cause,
-    corrective_action, reopened_stage, status
+    corrective_action, reopened_at_stage, reopened_stage, status
   ) values (
     v_req.business_id, v_req.job_id, v_req.category,
     v_req.stage_failed_at::public.job_stage, v_req.root_cause,
-    v_req.corrective_action, v_req.reopened_stage, 'open'
+    v_req.corrective_action, v_req.reopened_stage, v_req.reopened_stage, 'open'
   );
   update public.ncr_approval_requests
   set status = 'approved', reviewed_by = auth.uid(), reviewed_at = now()
@@ -390,6 +430,7 @@ grant execute on function public.set_agreed_labour_quote(uuid,numeric) to authen
 grant execute on function public.create_job_with_costing(uuid,uuid,text,text,text,text,date,numeric,numeric,numeric,numeric,numeric) to authenticated;
 grant execute on function public.approve_stage_submission(uuid) to authenticated;
 grant execute on function public.approve_ncr(uuid) to authenticated;
+grant execute on function public.set_invoice_paid_status(uuid,boolean) to authenticated;
 grant execute on function public.move_inventory_department(uuid,text,numeric,uuid,text) to authenticated;
 grant execute on function public.create_purchase_order(uuid,text,date,date,numeric,text,jsonb) to authenticated;
 grant execute on function public.receive_purchase_order(uuid) to authenticated;
