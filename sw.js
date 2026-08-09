@@ -1,4 +1,4 @@
-const CACHE_NAME = "osafi-steel-v11";
+const CACHE_NAME = "osafi-steel-v12";
 const APP_FILES = [
   "./",
   "./index.html",
@@ -22,9 +22,16 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
-  event.respondWith(
-    caches.match(event.request).then((cached) =>
-      cached || fetch(event.request).catch(() => caches.match("./index.html"))
-    )
-  );
+  const url = new URL(event.request.url);
+  if (url.origin !== self.location.origin) return;
+  event.respondWith(fetch(event.request).then((response) => {
+    if (response.ok) {
+      const copy = response.clone();
+      event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy)));
+    }
+    return response;
+  }).catch(async () => {
+    const cached = await caches.match(event.request);
+    return cached || (event.request.mode === "navigate" ? caches.match("./index.html") : Response.error());
+  }));
 });
