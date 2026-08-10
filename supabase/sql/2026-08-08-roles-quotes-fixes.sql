@@ -19,6 +19,7 @@ begin
     join pg_proc p on p.oid = t.tgfoid
     where not t.tgisinternal
       and ns.nspname = 'public'
+      and p.proname <> 'enforce_tenant_refs'
       and lower(pg_get_functiondef(p.oid)) ~ 'new[[:space:]]*\.[[:space:]]*technician_id'
       and not exists (
         select 1 from pg_attribute a
@@ -155,9 +156,9 @@ begin
     v_user.business_id,p_customer_id,p_technician_id,trim(p_product_type),trim(p_dimensions),trim(p_finish),
     p_fulfilment,p_deadline,v_selling,'quoted',auth.uid()
   ) returning id into v_job_id;
-  insert into public.job_costing(job_id,materials_cost,labor_cost,overhead_cost,total_cost,margin_percent,selling_price)
-  values(v_job_id,greatest(coalesce(p_materials_cost,0),0),greatest(coalesce(p_labor_cost,0),0),
-    greatest(coalesce(p_overhead_cost,0),0),v_total,greatest(coalesce(p_margin_percent,0),0),v_selling);
+  insert into public.job_costing(business_id,job_id,materials_cost,labor_cost,overhead_cost,margin_percent)
+  values(v_user.business_id,v_job_id,greatest(coalesce(p_materials_cost,0),0),greatest(coalesce(p_labor_cost,0),0),
+    greatest(coalesce(p_overhead_cost,0),0),greatest(coalesce(p_margin_percent,0),0));
   return v_job_id;
 end;
 $$;

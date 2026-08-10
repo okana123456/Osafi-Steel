@@ -1,4 +1,4 @@
-const CACHE_NAME = "osafi-steel-v13";
+const CACHE_NAME = "osafi-steel-v14";
 const APP_FILES = [
   "./",
   "./index.html",

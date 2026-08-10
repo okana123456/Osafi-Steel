@@ -1,55 +1,14 @@
 -- Osafi Steel: permanent job costing, quotation and customer invoice repair.
 -- Run this entire file in Supabase SQL Editor.
 
--- Remove any old costing trigger whose function incorrectly expects a
--- technician_id field on job_costing.
-do $$
-declare r record;
-begin
-  for r in
-    select t.tgname
-    from pg_trigger t
-    join pg_class c on c.oid = t.tgrelid
-    join pg_namespace n on n.oid = c.relnamespace
-    join pg_proc p on p.oid = t.tgfoid
-    where not t.tgisinternal and n.nspname = 'public'
-      and c.relname = 'job_costing'
-      and lower(pg_get_functiondef(p.oid)) ~ 'new[[:space:]]*\.[[:space:]]*technician_id'
-  loop
-    execute format('drop trigger if exists %I on public.job_costing', r.tgname);
-  end loop;
-end;
-$$;
-
-create or replace function public.osafi_calculate_job_costing()
-returns trigger
-language plpgsql
-set search_path = public
-as $$
-begin
-  new.materials_cost := greatest(coalesce(new.materials_cost, 0), 0);
-  new.labor_cost := greatest(coalesce(new.labor_cost, 0), 0);
-  new.overhead_cost := greatest(coalesce(new.overhead_cost, 0), 0);
-  new.margin_percent := greatest(coalesce(new.margin_percent, 0), 0);
-  new.total_cost := new.materials_cost + new.labor_cost + new.overhead_cost;
-  new.selling_price := round(new.total_cost * (1 + new.margin_percent / 100), 2);
-  return new;
-end;
-$$;
-
+-- total_cost and selling_price are generated columns in the live database.
+-- They must never be assigned by a trigger, RPC, or browser upsert.
 drop trigger if exists osafi_job_costing_totals on public.job_costing;
-create trigger osafi_job_costing_totals
-before insert or update of materials_cost, labor_cost, overhead_cost, margin_percent
-on public.job_costing
-for each row execute function public.osafi_calculate_job_costing();
+drop function if exists public.osafi_calculate_job_costing();
 
--- Recalculate any old costing rows that were saved while the broken trigger
--- was disabled.
-update public.job_costing
-set materials_cost = coalesce(materials_cost, 0),
-    labor_cost = coalesce(labor_cost, 0),
-    overhead_cost = coalesce(overhead_cost, 0),
-    margin_percent = coalesce(margin_percent, 0);
+-- Product type and finish are searchable free-text fields in the app.
+alter table public.jobs drop constraint if exists jobs_finish_check;
+alter table public.jobs drop constraint if exists jobs_product_type_check;
 
 create or replace function public.create_job_with_costing(
   p_customer_id uuid,
@@ -76,7 +35,6 @@ declare
   v_labor numeric := greatest(coalesce(p_labor_cost, 0), 0);
   v_overhead numeric := greatest(coalesce(p_overhead_cost, 0), 0);
   v_margin numeric := greatest(coalesce(p_margin_percent, 0), 0);
-  v_total numeric;
   v_selling numeric;
 begin
   select * into v_user from public.users where id = auth.uid();
@@ -100,8 +58,7 @@ begin
     raise exception 'Complete every required job field';
   end if;
 
-  v_total := v_materials + v_labor + v_overhead;
-  v_selling := round(v_total * (1 + v_margin / 100), 2);
+  v_selling := round((v_materials + v_labor + v_overhead) * (1 + v_margin / 100), 2);
 
   insert into public.jobs(
     business_id, customer_id, technician_id, product_type, dimensions, finish,
@@ -113,11 +70,9 @@ begin
   ) returning id into v_job_id;
 
   insert into public.job_costing(
-    job_id, materials_cost, labor_cost, overhead_cost,
-    total_cost, margin_percent, selling_price
+    business_id, job_id, materials_cost, labor_cost, overhead_cost, margin_percent
   ) values (
-    v_job_id, v_materials, v_labor, v_overhead,
-    v_total, v_margin, v_selling
+    v_user.business_id, v_job_id, v_materials, v_labor, v_overhead, v_margin
   );
 
   return v_job_id;
@@ -154,14 +109,38 @@ begin
   select * into v_invoice from public.invoices
   where job_id = p_job_id order by created_at desc limit 1;
   if v_invoice.id is null then
-    insert into public.invoices(job_id, total, status)
-    values (p_job_id, v_amount, 'unpaid') returning * into v_invoice;
+    insert into public.invoices(business_id, job_id, total, status)
+    values (v_user.business_id, p_job_id, v_amount, 'unpaid') returning * into v_invoice;
   else
     update public.invoices set total = v_amount where id = v_invoice.id
     returning * into v_invoice;
   end if;
   update public.jobs set quoted_price = v_amount, status = 'invoiced' where id = p_job_id;
   return v_invoice.id;
+end;
+$$;
+
+create or replace function public.set_invoice_paid_status(p_invoice_id uuid, p_paid boolean)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_user public.users%rowtype;
+  v_invoice public.invoices%rowtype;
+begin
+  select * into v_user from public.users where id = auth.uid();
+  if v_user.id is null or v_user.role::text not in ('ops_manager','operations_manager','accountant') then
+    raise exception 'Only management or accounting can update invoice payments';
+  end if;
+  select * into v_invoice from public.invoices where id = p_invoice_id;
+  if v_invoice.id is null or v_invoice.business_id <> v_user.business_id then
+    raise exception 'Invoice not found for this business';
+  end if;
+  update public.invoices
+  set status = case when coalesce(p_paid,false) then 'paid' else 'unpaid' end
+  where id = p_invoice_id;
 end;
 $$;
 
@@ -181,3 +160,4 @@ where i.job_id = j.id and coalesce(i.total, 0) = 0;
 
 grant execute on function public.create_job_with_costing(uuid,uuid,text,text,text,text,date,numeric,numeric,numeric,numeric,numeric) to authenticated;
 grant execute on function public.create_customer_invoice(uuid) to authenticated;
+grant execute on function public.set_invoice_paid_status(uuid,boolean) to authenticated;
