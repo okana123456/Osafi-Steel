@@ -115,7 +115,9 @@ begin
     update public.invoices set total = v_amount where id = v_invoice.id
     returning * into v_invoice;
   end if;
-  update public.jobs set quoted_price = v_amount, status = 'invoiced' where id = p_job_id;
+  -- Billing must not interrupt approval or production. Invoice status belongs
+  -- in public.invoices while the job keeps its current workshop status.
+  update public.jobs set quoted_price = v_amount where id = p_job_id;
   return v_invoice.id;
 end;
 $$;
