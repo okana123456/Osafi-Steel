@@ -128,7 +128,11 @@ create or replace function public.create_job_with_costing(
   p_margin_percent numeric
 ) returns uuid
 language plpgsql security definer set search_path = public as $$
-declare v_user public.users%rowtype; v_job_id uuid;
+declare
+  v_user public.users%rowtype;
+  v_job_id uuid;
+  v_total numeric;
+  v_selling numeric;
 begin
   select * into v_user from public.users where id=auth.uid();
   if v_user.role::text not in ('ops_manager','operations_manager') then
@@ -140,16 +144,20 @@ begin
   if not exists(select 1 from public.users u where u.id=p_technician_id and u.business_id=v_user.business_id and u.role::text='technician') then
     raise exception 'Choose a technician from this business';
   end if;
+  v_total := greatest(coalesce(p_materials_cost,0),0)
+    + greatest(coalesce(p_labor_cost,0),0)
+    + greatest(coalesce(p_overhead_cost,0),0);
+  v_selling := round(v_total * (1 + greatest(coalesce(p_margin_percent,0),0) / 100), 2);
   insert into public.jobs(
     business_id,customer_id,technician_id,product_type,dimensions,finish,
     delivery_or_collection,deadline,quoted_price,status,created_by
   ) values (
     v_user.business_id,p_customer_id,p_technician_id,trim(p_product_type),trim(p_dimensions),trim(p_finish),
-    p_fulfilment,p_deadline,greatest(coalesce(p_quoted_price,0),0),'quoted',auth.uid()
+    p_fulfilment,p_deadline,v_selling,'quoted',auth.uid()
   ) returning id into v_job_id;
-  insert into public.job_costing(job_id,materials_cost,labor_cost,overhead_cost,margin_percent)
+  insert into public.job_costing(job_id,materials_cost,labor_cost,overhead_cost,total_cost,margin_percent,selling_price)
   values(v_job_id,greatest(coalesce(p_materials_cost,0),0),greatest(coalesce(p_labor_cost,0),0),
-    greatest(coalesce(p_overhead_cost,0),0),greatest(coalesce(p_margin_percent,0),0));
+    greatest(coalesce(p_overhead_cost,0),0),v_total,greatest(coalesce(p_margin_percent,0),0),v_selling);
   return v_job_id;
 end;
 $$;
