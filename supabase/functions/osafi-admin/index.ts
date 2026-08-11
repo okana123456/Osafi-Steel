@@ -1,6 +1,6 @@
 // Deploy as a Supabase Edge Function named "osafi-admin" with JWT verification disabled.
 // New-business registration is authenticated by ADMIN_REGISTRATION_KEY.
-// Existing-business team invites require a signed-in ops_manager user.
+// Existing-business team management requires a signed-in ops_manager user.
 // Required custom secrets: ADMIN_REGISTRATION_KEY and OSAFI_SERVICE_ROLE_KEY.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
@@ -150,7 +150,7 @@ Deno.serve(async (req) => {
         .eq("id", callerData.user.id)
         .single();
       if (!caller || caller.role !== "ops_manager") {
-        return reply({ error: "Only an Ops Manager can delete team members" }, 403);
+        return reply({ error: "Only an Ops Manager can remove team members" }, 403);
       }
 
       const userId = typeof body.user_id === "string" ? body.user_id : "";
@@ -164,21 +164,36 @@ Deno.serve(async (req) => {
         .single();
       if (memberError || !member) return reply({ error: "Team member was not found" }, 404);
       if (member.business_id !== caller.business_id) return reply({ error: "Team member is not in your business" }, 403);
-      if (member.role === "ops_manager") return reply({ error: "Manager accounts cannot be deleted from Team" }, 403);
+      if (member.role === "ops_manager") return reply({ error: "Manager accounts cannot be removed from Team" }, 403);
+
+      // Do not delete the profile or Auth user: production checklists, messages,
+      // approvals and audit records must continue to identify their author.
+      // Banning the Auth account removes access while is_active hides the member
+      // from current team and technician lists.
+      const { error: banError } = await admin.auth.admin.updateUserById(userId, {
+        ban_duration: "876000h",
+      });
+      if (banError) return reply({ error: banError.message }, 400);
 
       const { error: unassignError } = await admin
         .from("jobs")
         .update({ technician_id: null })
         .eq("technician_id", userId);
-      if (unassignError) return reply({ error: unassignError.message }, 400);
+      if (unassignError) {
+        await admin.auth.admin.updateUserById(userId, { ban_duration: "none" });
+        return reply({ error: unassignError.message }, 400);
+      }
 
-      const { error: profileError } = await admin.from("users").delete().eq("id", userId);
-      if (profileError) return reply({ error: profileError.message }, 400);
+      const { error: profileError } = await admin
+        .from("users")
+        .update({ is_active: false })
+        .eq("id", userId);
+      if (profileError) {
+        await admin.auth.admin.updateUserById(userId, { ban_duration: "none" });
+        return reply({ error: profileError.message }, 400);
+      }
 
-      const { error: deleteAuthError } = await admin.auth.admin.deleteUser(userId);
-      if (deleteAuthError) return reply({ error: deleteAuthError.message }, 400);
-
-      return reply({ ok: true });
+      return reply({ ok: true, deactivated: true });
     }
 
     if (body.action === "update_team_member") {
