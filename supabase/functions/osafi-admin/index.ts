@@ -105,9 +105,9 @@ Deno.serve(async (req) => {
         return reply({ error: "Only an Ops Manager can invite team members" }, 403);
       }
 
-      const { email, full_name, phone, role, redirect_to } = body;
-      if (![email, full_name].every((x) => typeof x === "string" && x.trim())) {
-        return reply({ error: "Name and email are required" }, 400);
+      const { email, full_name, phone, role, location, id_number, redirect_to } = body;
+      if (![email, full_name, phone, location, id_number].every((x) => typeof x === "string" && x.trim())) {
+        return reply({ error: "Name, email, phone, location and ID number are required" }, 400);
       }
       const allowedRoles = ["technician", "operations_manager", "store_manager", "accountant"];
       const nextRole = typeof role === "string" && allowedRoles.includes(role) ? role : "technician";
@@ -128,7 +128,9 @@ Deno.serve(async (req) => {
         business_id: caller.business_id,
         full_name: full_name.trim(),
         email: email.trim(),
-        phone: typeof phone === "string" && phone.trim() ? phone.trim() : null,
+        phone: phone.trim(),
+        location: location.trim(),
+        id_number: id_number.trim(),
         role: nextRole,
       });
       if (profileError) {
@@ -214,15 +216,17 @@ Deno.serve(async (req) => {
       const fullName = typeof body.full_name === "string" ? body.full_name.trim() : "";
       const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
       const phone = typeof body.phone === "string" && body.phone.trim() ? body.phone.trim() : null;
+      const location = typeof body.location === "string" ? body.location.trim() : "";
+      const idNumber = typeof body.id_number === "string" ? body.id_number.trim() : "";
       const requestedRole = typeof body.role === "string" ? body.role : "technician";
       const allowedRoles = ["technician", "operations_manager", "store_manager", "accountant"];
-      if (!userId || !fullName || !email) {
-        return reply({ error: "Team member, name and email are required" }, 400);
+      if (!userId || !fullName || !email || !phone || !location || !idNumber) {
+        return reply({ error: "Team member, name, email, phone, location and ID number are required" }, 400);
       }
 
       const { data: member, error: memberError } = await admin
         .from("users")
-        .select("id,business_id,role,full_name,email,phone")
+        .select("id,business_id,role,full_name,email,phone,location,id_number")
         .eq("id", userId)
         .single();
       if (memberError || !member) return reply({ error: "Team member was not found" }, 404);
@@ -253,7 +257,7 @@ Deno.serve(async (req) => {
 
       const { error: profileError } = await admin
         .from("users")
-        .update({ full_name: fullName, email, phone, role: nextRole })
+        .update({ full_name: fullName, email, phone, location, id_number: idNumber, role: nextRole })
         .eq("id", userId);
       if (profileError) {
         await admin.auth.admin.updateUserById(userId, {
